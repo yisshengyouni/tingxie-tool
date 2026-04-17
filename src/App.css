@@ -1,0 +1,105 @@
+/* App-specific styles */
+
+/* Smooth transitions for all interactive elements */
+button, input, select, .card {
+  transition: all 0.2s ease-in-out;
+}
+
+/* Custom focus styles */
+input:focus, select:focus, button:focus {
+  outline: none;
+}
+
+/* Character animation on display */
+@keyframes charAppear {
+  0% {
+    opacity: 0;
+    transform: scale(0.5) rotate(-10deg);
+  }
+  50% {
+    transform: scale(1.1) rotate(5deg);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1) rotate(0);
+  }
+}
+
+.char-display {
+  animation: charAppear 0.5s ease-out;
+}
+
+/* Progress bar custom styling */
+[data-slot="progress-indicator"] {
+  background: linear-gradient(90deg, #fbbf24 0%, #f97316 100%);
+  border-radius: 9999px;
+}
+
+/* Card hover lift effect */
+.card-hover {
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.card-hover:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 12px 40px rgba(251, 191, 36, 0.25);
+}
+
+/* Button press effect */
+button:active {
+  transform: scale(0.98);
+}
+
+/* Input placeholder styling */
+input::placeholder {
+  color: #d4b896;
+  font-size: 0.6em;
+}
+
+/* Selection color */
+::selection {
+  background-color: rgba(251, 191, 36, 0.3);
+  color: inherit;
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: #fef3c7;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #fbbf24;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #f59e0b;
+}
+
+/* Mobile optimizations */
+@media (max-width: 640px) {
+  .char-display {
+    font-size: 6rem !important;
+  }
+  
+  .font-fun {
+    font-size: 2.5rem;
+  }
+}
+
+/* Reduced motion preference */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
