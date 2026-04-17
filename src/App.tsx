@@ -19,27 +19,20 @@ function App() {
   const [isAndroidWechat, setIsAndroidWechat] = useState(false);
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const resumeRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const audioRef = useRef<HTMLAudioElement | null>(null);
   const isPlayingRef = useRef(isPlaying);
   const speedRef = useRef(speed);
   const repeatCountRef = useRef(repeatCount);
   const intervalSecondsRef = useRef(intervalSeconds);
-  const isAndroidWechatRef = useRef(isAndroidWechat);
 
   useEffect(() => { isPlayingRef.current = isPlaying; }, [isPlaying]);
   useEffect(() => { speedRef.current = speed; }, [speed]);
   useEffect(() => { repeatCountRef.current = repeatCount; }, [repeatCount]);
   useEffect(() => { intervalSecondsRef.current = intervalSeconds; }, [intervalSeconds]);
-  useEffect(() => { isAndroidWechatRef.current = isAndroidWechat; }, [isAndroidWechat]);
 
   useEffect(() => {
     return () => {
       if (timeoutRef.current) clearTimeout(timeoutRef.current);
       if (resumeRef.current) clearInterval(resumeRef.current);
-      if (audioRef.current) {
-        audioRef.current.pause();
-        audioRef.current = null;
-      }
       if ('speechSynthesis' in window) {
         window.speechSynthesis.cancel();
       }
@@ -53,19 +46,6 @@ function App() {
     const isAndroid = ua.includes('android');
     setIsWechat(isWeixin);
     setIsAndroidWechat(isWeixin && isAndroid);
-    console.log('[Env] UA:', navigator.userAgent);
-    console.log('[Env] isWechat:', isWeixin, 'isAndroidWechat:', isWeixin && isAndroid);
-    console.log('[Env] speechSynthesis:', 'speechSynthesis' in window);
-    console.log('[Env] WeixinJSBridge:', typeof (window as typeof window & { WeixinJSBridge?: unknown }).WeixinJSBridge);
-    if ('speechSynthesis' in window) {
-      const voices = window.speechSynthesis.getVoices();
-      console.log('[Env] voices count:', voices.length);
-      console.log('[Env] voices:', voices.map(v => `${v.name}(${v.lang})`));
-      window.speechSynthesis.onvoiceschanged = () => {
-        const updated = window.speechSynthesis.getVoices();
-        console.log('[Env] voices updated count:', updated.length);
-      };
-    }
   }, []);
 
   // 解析输入的生词
@@ -99,48 +79,8 @@ function App() {
     }
   }, []);
 
-  // 微信 JSBridge 音频解锁通用方法
-  const wechatUnlockAudio = (playFn: () => void) => {
-    console.log('[wechatUnlockAudio] called');
-    const wx = (window as typeof window & { WeixinJSBridge?: { invoke: (name: string, args: object, cb: () => void) => void } }).WeixinJSBridge;
-    if (wx && wx.invoke) {
-      console.log('[wechatUnlockAudio] WeixinJSBridge ready, invoking getNetworkType');
-      wx.invoke('getNetworkType', {}, () => {
-        console.log('[wechatUnlockAudio] getNetworkType callback');
-        playFn();
-      });
-    } else {
-      console.log('[wechatUnlockAudio] WeixinJSBridge not ready, waiting for WeixinJSBridgeReady');
-      document.addEventListener('WeixinJSBridgeReady', () => {
-        const wx2 = (window as typeof window & { WeixinJSBridge?: { invoke: (name: string, args: object, cb: () => void) => void } }).WeixinJSBridge;
-        if (wx2 && wx2.invoke) {
-          console.log('[wechatUnlockAudio] WeixinJSBridgeReady fired, invoking getNetworkType');
-          wx2.invoke('getNetworkType', {}, () => {
-            console.log('[wechatUnlockAudio] getNetworkType callback after ready');
-            playFn();
-          });
-        } else {
-          console.warn('[wechatUnlockAudio] WeixinJSBridge still missing after ready event');
-          playFn();
-        }
-      }, false);
-    }
-  };
-
-  // 初始化音频（解决微信自动播放限制）
+  // 初始化音频（解决 iOS 微信自动播放限制）
   const initAudio = () => {
-    console.log('[initAudio] called, isAndroidWechat:', isAndroidWechat);
-    if (isAndroidWechat) {
-      // Android 微信：必须通过 WeixinJSBridge 解锁音频
-      wechatUnlockAudio(() => {
-        const silentAudio = new Audio('data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA');
-        silentAudio.play().then(() => console.log('[initAudio] silentAudio play success')).catch((e) => console.error('[initAudio] silentAudio play error:', e));
-        setAudioEnabled(true);
-        console.log('[initAudio] audioEnabled set to true');
-      });
-      return;
-    }
-
     if ('speechSynthesis' in window) {
       window.speechSynthesis.cancel();
       window.speechSynthesis.resume();
@@ -152,78 +92,9 @@ function App() {
     }
   };
 
-  // Android 微信 fallback：使用在线 TTS 发音
-  const playAudioFallback = useCallback((text: string, onEnd?: () => void) => {
-    console.log('[playAudioFallback] text:', text);
-    if (audioRef.current) {
-      audioRef.current.pause();
-      audioRef.current = null;
-    }
-
-    const url = `https://dict.youdao.com/dictvoice?audio=${encodeURIComponent(text)}&type=1`;
-    const baiduUrl = `https://tts.baidu.com/text2audio?tex=${encodeURIComponent(text)}&lan=zh&cuid=tingxie&ctp=1&spd=5`;
-    console.log('[playAudioFallback] trying url:', url);
-    console.log('[playAudioFallback] backup url:', baiduUrl);
-
-    const tryPlay = (src: string, isBaidu = false) => {
-      const audio = new Audio(src);
-      audioRef.current = audio;
-      audio.onended = () => {
-        console.log('[playAudioFallback] audio ended');
-        onEnd?.();
-      };
-      audio.onerror = (e) => {
-        console.error('[playAudioFallback] audio error for:', text, 'isBaidu:', isBaidu, e);
-        if (!isBaidu) {
-          console.log('[playAudioFallback] switching to baidu url');
-          tryPlay(baiduUrl, true);
-        } else {
-          onEnd?.();
-        }
-      };
-      audio.oncanplay = () => {
-        console.log('[playAudioFallback] audio canplay, isBaidu:', isBaidu);
-      };
-      audio.onstalled = () => {
-        console.warn('[playAudioFallback] audio stalled, isBaidu:', isBaidu);
-      };
-      audio.onabort = () => {
-        console.warn('[playAudioFallback] audio abort, isBaidu:', isBaidu);
-      };
-
-      const doPlay = () => {
-        console.log('[playAudioFallback] doPlay called, isBaidu:', isBaidu);
-        audio.play().then(() => console.log('[playAudioFallback] audio play success, isBaidu:', isBaidu)).catch((e) => {
-          console.error('[playAudioFallback] audio play error, isBaidu:', isBaidu, e);
-          if (!isBaidu) {
-            console.log('[playAudioFallback] switching to baidu url after play error');
-            tryPlay(baiduUrl, true);
-          } else {
-            onEnd?.();
-          }
-        });
-      };
-
-      if (isAndroidWechatRef.current) {
-        wechatUnlockAudio(doPlay);
-      } else {
-        doPlay();
-      }
-    };
-
-    tryPlay(url);
-  }, []);
-
   // 语音合成
   const speakWord = useCallback((text: string, rate: number, onEnd?: () => void) => {
-    console.log('[speakWord] text:', text, 'rate:', rate, 'isAndroidWechat:', isAndroidWechatRef.current);
-    if (isAndroidWechatRef.current) {
-      playAudioFallback(text, onEnd);
-      return;
-    }
-
     if (!('speechSynthesis' in window)) {
-      console.warn('[speakWord] speechSynthesis not supported');
       onEnd?.();
       return;
     }
@@ -237,22 +108,16 @@ function App() {
     utterance.pitch = 1;
     utterance.volume = 1;
 
-    utterance.onstart = () => {
-      console.log('[speakWord] Speech started:', text);
-    };
-
     utterance.onend = () => {
-      console.log('[speakWord] Speech ended:', text);
       onEnd?.();
     };
 
-    utterance.onerror = (e) => {
-      console.error('[speakWord] Speech error:', e);
+    utterance.onerror = () => {
       onEnd?.();
     };
 
     window.speechSynthesis.speak(utterance);
-  }, [playAudioFallback]);
+  }, []);
 
   // iOS/微信兼容性：防止语音引擎被系统暂停后冻结
   const startResumeHack = () => {
@@ -273,16 +138,11 @@ function App() {
 
   // 停止播放
   const stopPlayback = () => {
-    console.log('[stopPlayback] called');
     if (timeoutRef.current) {
       clearTimeout(timeoutRef.current);
       timeoutRef.current = null;
     }
     stopResumeHack();
-    if (audioRef.current) {
-      audioRef.current.pause();
-      audioRef.current = null;
-    }
     if ('speechSynthesis' in window) {
       window.speechSynthesis.cancel();
       window.speechSynthesis.resume();
@@ -319,13 +179,16 @@ function App() {
 
   // 开始播放
   const startPlayback = () => {
-    console.log('[startPlayback] called, isWechat:', isWechat, 'audioEnabled:', audioEnabled);
+    if (isAndroidWechat && !('speechSynthesis' in window)) {
+      // Android 微信不支持 speechSynthesis，提示用户在浏览器中打开
+      return;
+    }
+
     if (isWechat && !audioEnabled) {
       initAudio();
     }
 
     const list = parseWords(words);
-    console.log('[startPlayback] word list:', list);
     if (list.length === 0) return;
 
     setWordList(list);
@@ -491,16 +354,24 @@ function App() {
               <VolumeX className="w-5 h-5" />
               <span className="font-medium">微信浏览器提示</span>
             </div>
-            <p className="text-orange-600 text-sm mb-3">
-              微信需要点击"开启声音"按钮才能播放语音，或者点击右上角"在浏览器中打开"。
-            </p>
-            <Button
-              onClick={initAudio}
-              className="w-full bg-orange-500 hover:bg-orange-600 text-white"
-            >
-              <Volume2 className="w-4 h-4 mr-2" />
-              开启声音
-            </Button>
+            {isAndroidWechat && !('speechSynthesis' in window) ? (
+              <p className="text-orange-600 text-sm">
+                Android 微信暂不支持语音朗读，请点击右上角"在浏览器中打开"继续使用。
+              </p>
+            ) : (
+              <>
+                <p className="text-orange-600 text-sm mb-3">
+                  微信需要点击"开启声音"按钮才能播放语音，或者点击右上角"在浏览器中打开"。
+                </p>
+                <Button
+                  onClick={initAudio}
+                  className="w-full bg-orange-500 hover:bg-orange-600 text-white"
+                >
+                  <Volume2 className="w-4 h-4 mr-2" />
+                  开启声音
+                </Button>
+              </>
+            )}
           </div>
         )}
 
@@ -721,7 +592,8 @@ function App() {
         {/* 使用说明 */}
         <div className="mt-6 text-center text-amber-500 text-sm space-y-1">
           <p>💡 点击分享按钮复制链接，朋友打开即可直接播放</p>
-          {isWechat && <p>🔊 微信用户请先点击"开启声音"按钮</p>}
+          {isWechat && !isAndroidWechat && <p>🔊 微信用户请先点击"开启声音"按钮</p>}
+          {isAndroidWechat && <p>🔊 Android 微信用户请在浏览器中打开以获得语音朗读</p>}
         </div>
       </div>
     </div>
