@@ -151,6 +151,17 @@ function App() {
       console.log('[playAudioFallback] playFromUrl:', audioUrl, 'isBlob:', isBlob);
       cleanupAudio();
 
+      let ended = false;
+      const callOnEnd = () => {
+        if (ended) {
+          console.log('[playAudioFallback] onEnd already called, skipping');
+          return;
+        }
+        ended = true;
+        console.log('[playAudioFallback] calling onEnd');
+        onEnd?.();
+      };
+
       const audio = new Audio(audioUrl);
       audioRef.current = audio;
       if (isBlob) {
@@ -169,7 +180,7 @@ function App() {
           URL.revokeObjectURL(audioUrl);
           blobUrlRef.current = null;
         }
-        onEnd?.();
+        callOnEnd();
       };
       audio.onerror = (e) => {
         console.error('[playAudioFallback] audio error', e);
@@ -177,7 +188,7 @@ function App() {
           URL.revokeObjectURL(audioUrl);
           blobUrlRef.current = null;
         }
-        onEnd?.();
+        callOnEnd();
       };
 
       const doPlay = () => {
@@ -188,7 +199,7 @@ function App() {
             URL.revokeObjectURL(audioUrl);
             blobUrlRef.current = null;
           }
-          onEnd?.();
+          callOnEnd();
         });
       };
 
