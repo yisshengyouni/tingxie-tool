@@ -125,7 +125,7 @@ function App() {
     }
   };
 
-  // Android 微信 fallback：通过新 TTS 服务播放
+  // Android 微信 fallback：通过新 TTS 服务播放，支持 stream/json/file 自动降级
   const playAudioFallback = useCallback(async (text: string, onEnd?: () => void) => {
     console.log('[playAudioFallback] text:', text);
     if (audioRef.current) {
@@ -133,33 +133,25 @@ function App() {
       audioRef.current = null;
     }
 
-    try {
-      const response = await fetch('https://eeda.yissheng.top/api/tts', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text, voice: 'zh-CN-XiaoxiaoNeural', return_type: 'stream' }),
-      });
+    const TTS_BASE = 'https://eeda.yissheng.top';
 
-      if (!response.ok) {
-        console.error('[playAudioFallback] TTS API error', response.status);
-        onEnd?.();
-        return;
-      }
-
-      const blob = await response.blob();
-      console.log('[playAudioFallback] blob size:', blob.size);
-      const url = URL.createObjectURL(blob);
-      const audio = new Audio(url);
+    const playFromUrl = (audioUrl: string) => {
+      console.log('[playAudioFallback] playFromUrl:', audioUrl);
+      const audio = new Audio(audioUrl);
       audioRef.current = audio;
+
+      audio.addEventListener('loadstart', () => console.log('[playAudioFallback] audio loadstart'));
+      audio.addEventListener('canplay', () => console.log('[playAudioFallback] audio canplay'));
+      audio.addEventListener('canplaythrough', () => console.log('[playAudioFallback] audio canplaythrough'));
+      audio.addEventListener('stalled', () => console.warn('[playAudioFallback] audio stalled'));
+      audio.addEventListener('abort', () => console.warn('[playAudioFallback] audio abort'));
 
       audio.onended = () => {
         console.log('[playAudioFallback] audio ended');
-        URL.revokeObjectURL(url);
         onEnd?.();
       };
       audio.onerror = (e) => {
         console.error('[playAudioFallback] audio error', e);
-        URL.revokeObjectURL(url);
         onEnd?.();
       };
 
@@ -167,7 +159,6 @@ function App() {
         console.log('[playAudioFallback] doPlay');
         audio.play().then(() => console.log('[playAudioFallback] play success')).catch((e) => {
           console.error('[playAudioFallback] play error', e);
-          URL.revokeObjectURL(url);
           onEnd?.();
         });
       };
@@ -177,10 +168,94 @@ function App() {
       } else {
         doPlay();
       }
+    };
+
+    // 模式1：stream（直接返回音频流）
+    try {
+      console.log('[playAudioFallback] trying stream mode...');
+      const response = await fetch(`${TTS_BASE}/api/tts`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text, voice: 'zh-CN-XiaoxiaoNeural', return_type: 'stream' }),
+      });
+      console.log('[playAudioFallback] stream response status:', response.status);
+
+      if (response.ok) {
+        const blob = await response.blob();
+        console.log('[playAudioFallback] stream blob size:', blob.size, 'type:', blob.type);
+        if (blob.size > 0) {
+          const url = URL.createObjectURL(blob);
+          console.log('[playAudioFallback] stream blob URL created');
+          playFromUrl(url);
+          return;
+        } else {
+          console.warn('[playAudioFallback] stream blob is empty, will fallback');
+        }
+      } else {
+        console.warn('[playAudioFallback] stream response not ok, will fallback');
+      }
     } catch (e) {
-      console.error('[playAudioFallback] fetch error', e);
-      onEnd?.();
+      console.error('[playAudioFallback] stream fetch error', e);
     }
+
+    // 模式2：json（获取 download_url）
+    try {
+      console.log('[playAudioFallback] trying json mode...');
+      const response = await fetch(`${TTS_BASE}/api/tts`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text, voice: 'zh-CN-XiaoxiaoNeural', return_type: 'json' }),
+      });
+      console.log('[playAudioFallback] json response status:', response.status);
+
+      if (response.ok) {
+        const data = await response.json();
+        console.log('[playAudioFallback] json data:', data);
+        const downloadUrl = data?.data?.download_url;
+        if (downloadUrl) {
+          const fullUrl = downloadUrl.startsWith('http') ? downloadUrl : `${TTS_BASE}${downloadUrl}`;
+          console.log('[playAudioFallback] json fullUrl:', fullUrl);
+          playFromUrl(fullUrl);
+          return;
+        } else {
+          console.warn('[playAudioFallback] json no download_url, will fallback');
+        }
+      } else {
+        console.warn('[playAudioFallback] json response not ok, will fallback');
+      }
+    } catch (e) {
+      console.error('[playAudioFallback] json fetch error', e);
+    }
+
+    // 模式3：file（直接返回音频文件流）
+    try {
+      console.log('[playAudioFallback] trying file mode...');
+      const response = await fetch(`${TTS_BASE}/api/tts`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text, voice: 'zh-CN-XiaoxiaoNeural', return_type: 'file' }),
+      });
+      console.log('[playAudioFallback] file response status:', response.status);
+
+      if (response.ok) {
+        const blob = await response.blob();
+        console.log('[playAudioFallback] file blob size:', blob.size, 'type:', blob.type);
+        if (blob.size > 0) {
+          const url = URL.createObjectURL(blob);
+          playFromUrl(url);
+          return;
+        } else {
+          console.warn('[playAudioFallback] file blob is empty');
+        }
+      } else {
+        console.warn('[playAudioFallback] file response not ok');
+      }
+    } catch (e) {
+      console.error('[playAudioFallback] file fetch error', e);
+    }
+
+    console.error('[playAudioFallback] all modes failed for:', text);
+    onEnd?.();
   }, []);
 
   // 一键在系统浏览器中打开（Android）
