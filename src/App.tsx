@@ -254,8 +254,11 @@ function App() {
       console.error('[playAudioFallback] file fetch error', e);
     }
 
-    console.error('[playAudioFallback] all modes failed for:', text);
-    onEnd?.();
+    // 模式4：GET audio src（绕过 fetch CORS/安全限制）
+    console.log('[playAudioFallback] trying GET audio src mode...');
+    const getUrl = `${TTS_BASE}/api/tts?text=${encodeURIComponent(text)}&voice=${encodeURIComponent('zh-CN-XiaoxiaoNeural')}&return_type=stream`;
+    console.log('[playAudioFallback] GET url:', getUrl);
+    playFromUrl(getUrl);
   }, []);
 
   // 一键在系统浏览器中打开（Android）
