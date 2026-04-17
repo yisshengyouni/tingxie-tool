@@ -184,36 +184,46 @@ function App() {
     return new Blob([blob], { type: 'audio/mpeg' });
   };
 
-  // 从 TTS 服务获取音频 Blob（带降级策略），缓存结果
-  const fetchAudioBlob = useCallback(async (text: string): Promise<Blob | null> => {
-    // 1. 看缓存
-    const cached = audioCacheRef.current.get(text);
-    if (cached) {
-      console.log('[TTS] cache hit for:', text);
-      return cached;
-    }
+  // 全局串行请求队列 — TTS 服务在并发请求时会串音频数据，所以必须逐个请求
+  const requestQueueRef = useRef<Array<{ text: string; resolve: (blob: Blob | null) => void; priority: boolean }>>([]);
+  const isProcessingQueueRef = useRef(false);
 
-    // 2. 看是否正在 fetch（防止并发重复请求同一单词）
-    const inflight = fetchingRef.current.get(text);
-    if (inflight) {
-      console.log('[TTS] waiting for inflight fetch:', text);
-      return inflight;
-    }
+  // 处理队列中的下一个请求
+  const processQueue = useCallback(async () => {
+    if (isProcessingQueueRef.current) return;
+    if (requestQueueRef.current.length === 0) return;
 
-    // 3. 发起请求
-    const TTS_BASE = 'https://eeda.yissheng.top';
-    const MAX_RETRIES = 2;
-    const MODES = ['file', 'stream', 'json'] as const;
+    isProcessingQueueRef.current = true;
 
-    const doFetch = async (): Promise<Blob | null> => {
+    while (requestQueueRef.current.length > 0) {
+      const item = requestQueueRef.current.shift()!;
+      const { text, resolve } = item;
+
+      // 双重检查缓存（可能在排队时已被其他请求缓存）
+      const cached = audioCacheRef.current.get(text);
+      if (cached) {
+        console.log('[TTS Queue] cache hit for:', text);
+        resolve(cached);
+        continue;
+      }
+
+      console.log(`[TTS Queue] fetching: ${text} (remaining: ${requestQueueRef.current.length})`);
+
+      const TTS_BASE = 'https://eeda.yissheng.top';
+      const MAX_RETRIES = 2;
+      const MODES = ['file', 'stream', 'json'] as const;
+
+      let result: Blob | null = null;
+
       for (const mode of MODES) {
+        if (result) break;
         for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
           try {
             if (attempt > 0) {
               await new Promise(r => setTimeout(r, 300 * attempt));
             }
 
-            console.log(`[TTS] ${mode} attempt ${attempt} for: ${text}`);
+            console.log(`[TTS Queue] ${mode} attempt ${attempt} for: ${text}`);
             const response = await fetch(`${TTS_BASE}/api/tts`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
@@ -221,7 +231,7 @@ function App() {
             });
 
             if (!response.ok) {
-              console.warn(`[TTS] ${mode} response ${response.status}`);
+              console.warn(`[TTS Queue] ${mode} response ${response.status}`);
               continue;
             }
 
@@ -230,70 +240,92 @@ function App() {
               const downloadUrl = data?.data?.download_url;
               if (!downloadUrl) continue;
               const fullUrl = downloadUrl.startsWith('http') ? downloadUrl : `${TTS_BASE}${downloadUrl}`;
-              // 下载实际音频文件
               const audioResp = await fetch(fullUrl);
               if (!audioResp.ok) continue;
               const blob = ensureAudioMimeType(await audioResp.blob());
               if (blob.size > 0) {
-                audioCacheRef.current.set(text, blob);
-                return blob;
+                result = blob;
+                break;
               }
             } else {
               const blob = ensureAudioMimeType(await response.blob());
               if (blob.size > 0) {
-                audioCacheRef.current.set(text, blob);
-                return blob;
+                result = blob;
+                break;
               }
-              console.warn(`[TTS] ${mode} blob empty`);
+              console.warn(`[TTS Queue] ${mode} blob empty`);
             }
           } catch (e) {
-            console.error(`[TTS] ${mode} attempt ${attempt} error`, e);
+            console.error(`[TTS Queue] ${mode} attempt ${attempt} error`, e);
           }
         }
       }
-      return null;
-    };
 
-    const promise = doFetch().finally(() => {
-      fetchingRef.current.delete(text);
-    });
-    fetchingRef.current.set(text, promise);
-    return promise;
+      if (result) {
+        audioCacheRef.current.set(text, result);
+        console.log(`[TTS Queue] cached: ${text} (${result.size} bytes)`);
+      } else {
+        console.error(`[TTS Queue] all modes failed for: ${text}`);
+      }
+      resolve(result);
+    }
+
+    isProcessingQueueRef.current = false;
   }, []);
 
-  // 预加载多个单词的音频（并发，不阻塞当前播放）
-  const PREFETCH_CONCURRENCY = 3; // 同时最多 3 个并发请求
+  // 获取音频 Blob（优先走缓存，否则加入队列）
+  // priority=true 时插到队列最前面（正在播放的词优先获取）
+  const fetchAudioBlob = useCallback((text: string, priority = false): Promise<Blob | null> => {
+    // 1. 缓存命中
+    const cached = audioCacheRef.current.get(text);
+    if (cached) {
+      console.log('[TTS] cache hit for:', text);
+      return Promise.resolve(cached);
+    }
+
+    // 2. 已在队列中（不重复添加）
+    const existing = fetchingRef.current.get(text);
+    if (existing) {
+      console.log('[TTS] already queued:', text);
+      return existing;
+    }
+
+    // 3. 创建新的 Promise，加入队列
+    const promise = new Promise<Blob | null>((resolve) => {
+      if (priority) {
+        // 播放中的词插到队列最前面
+        requestQueueRef.current.unshift({ text, resolve, priority: true });
+      } else {
+        requestQueueRef.current.push({ text, resolve, priority: false });
+      }
+    });
+
+    fetchingRef.current.set(text, promise);
+    // Promise 完成后从 fetchingRef 移除
+    promise.finally(() => {
+      fetchingRef.current.delete(text);
+    });
+
+    // 触发队列处理
+    processQueue();
+
+    return promise;
+  }, [processQueue]);
+
+  // 预加载多个单词的音频（加入串行队列，不会并发请求）
   const prefetchAudio = useCallback((words: string[], startIdx: number, count?: number) => {
     const end = count ? Math.min(startIdx + count, words.length) : words.length;
     const toFetch = words.slice(startIdx, end).filter(w => {
-      // 跳过已缓存和正在请求的
       return !audioCacheRef.current.has(w) && !fetchingRef.current.has(w);
     });
 
     if (toFetch.length === 0) return;
     console.log(`[Prefetch] queuing ${toFetch.length} words from index ${startIdx}:`, toFetch);
 
-    // 用简单的并发控制（不超过 PREFETCH_CONCURRENCY 个同时请求）
-    let running = 0;
-    let idx = 0;
-
-    const next = () => {
-      while (running < PREFETCH_CONCURRENCY && idx < toFetch.length) {
-        const word = toFetch[idx++];
-        running++;
-        fetchAudioBlob(word)
-          .then(blob => {
-            if (blob) console.log(`[Prefetch] cached: ${word} (${blob.size} bytes)`);
-            else console.warn(`[Prefetch] failed: ${word}`);
-          })
-          .catch(() => {})
-          .finally(() => {
-            running--;
-            next();
-          });
-      }
-    };
-    next();
+    // 依次加入队列（低优先级），队列会串行处理
+    toFetch.forEach(word => {
+      fetchAudioBlob(word, false);
+    });
   }, [fetchAudioBlob]);
 
   // 用缓存的 Blob 播放音频（复用同一个 Audio 元素）
@@ -305,8 +337,8 @@ function App() {
     // 停止当前播放
     stopCurrentAudio();
 
-    // 获取音频数据（优先走缓存）
-    const blob = await fetchAudioBlob(text);
+    // 获取音频数据（优先走缓存，priority=true 让正在播放的词优先于预加载队列）
+    const blob = await fetchAudioBlob(text, true);
 
     // 被更新的播放请求覆盖了
     if (playbackIdRef.current !== currentPlaybackId) {
@@ -471,7 +503,7 @@ function App() {
 
     // 提前预加载接下来的几个词（仅在第一遍时触发，避免重复预加载）
     if (repeat === 1) {
-      prefetchAudio(list, wordIdx + 1, PREFETCH_CONCURRENCY);
+      prefetchAudio(list, wordIdx + 1, 3);
     }
 
     speakWord(list[wordIdx], speedRef.current, () => {
