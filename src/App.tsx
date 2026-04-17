@@ -358,14 +358,6 @@ function App() {
     }
   }, [fetchAudioBlob]);
 
-  // 一键在系统浏览器中打开（Android）
-  const openInSystemBrowser = () => {
-    const url = window.location.href;
-    const intentUrl = `intent://${url.replace(/^https?:\/\//, '')}#Intent;scheme=https;action=android.intent.action.VIEW;end;`;
-    console.log('[openInSystemBrowser] trying intent:', intentUrl);
-    window.location.href = intentUrl;
-  };
-
   // 语音合成
   const speakWord = useCallback((text: string, rate: number, onEnd?: () => void) => {
     if (isAndroidWechatRef.current) {
@@ -631,32 +623,9 @@ function App() {
               <VolumeX className="w-5 h-5" />
               <span className="font-medium">微信浏览器提示</span>
             </div>
-            <p className="text-orange-600 text-sm mb-3">
-              微信需要点击"开启声音"按钮才能播放语音，或者点击右上角"在浏览器中打开"。
+            <p className="text-orange-600 text-sm">
+              微信内置浏览器需要点击下方"开始听写"按钮才能播放语音。
             </p>
-            <Button
-              onClick={initAudio}
-              className="w-full bg-orange-500 hover:bg-orange-600 text-white"
-            >
-              <Volume2 className="w-4 h-4 mr-2" />
-              开启声音
-            </Button>
-          </div>
-        )}
-
-        {/* Android 微信引导 */}
-        {isAndroidWechat && (
-          <div className="bg-blue-50 border-2 border-blue-200 rounded-xl p-4 mb-4">
-            <p className="text-blue-700 text-sm mb-3">
-              如果播放没有声音，请在系统浏览器中打开以获得最佳体验。
-            </p>
-            <Button
-              onClick={openInSystemBrowser}
-              variant="outline"
-              className="w-full border-blue-400 text-blue-600 hover:bg-blue-100"
-            >
-              一键打开
-            </Button>
           </div>
         )}
 
