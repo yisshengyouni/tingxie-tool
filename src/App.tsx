@@ -137,7 +137,7 @@ function App() {
       const response = await fetch('https://eeda.yissheng.top/api/tts', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text, voice: 'zh-CN-XiaoxiaoNeural' }),
+        body: JSON.stringify({ text, voice: 'zh-CN-XiaoxiaoNeural', return_type: 'stream' }),
       });
 
       if (!response.ok) {
