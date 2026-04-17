@@ -125,33 +125,71 @@ function App() {
     }
   };
 
-  // Android 微信 fallback：通过自有 API 代理播放 TTS
-  const playAudioFallback = useCallback((text: string, onEnd?: () => void) => {
+  // Android 微信 fallback：通过新 TTS 服务播放
+  const playAudioFallback = useCallback(async (text: string, onEnd?: () => void) => {
+    console.log('[playAudioFallback] text:', text);
     if (audioRef.current) {
       audioRef.current.pause();
       audioRef.current = null;
     }
-    const audio = new Audio(`/api/tts?text=${encodeURIComponent(text)}`);
-    audioRef.current = audio;
-    audio.onended = () => {
-      onEnd?.();
-    };
-    audio.onerror = () => {
-      onEnd?.();
-    };
 
-    const doPlay = () => {
-      audio.play().catch(() => {
-        onEnd?.();
+    try {
+      const response = await fetch('http://eeda.yissheng.top/api/tts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text, voice: 'zh-CN-XiaoxiaoNeural' }),
       });
-    };
 
-    if (isAndroidWechatRef.current) {
-      wechatUnlockAudio(doPlay);
-    } else {
-      doPlay();
+      if (!response.ok) {
+        console.error('[playAudioFallback] TTS API error', response.status);
+        onEnd?.();
+        return;
+      }
+
+      const blob = await response.blob();
+      console.log('[playAudioFallback] blob size:', blob.size);
+      const url = URL.createObjectURL(blob);
+      const audio = new Audio(url);
+      audioRef.current = audio;
+
+      audio.onended = () => {
+        console.log('[playAudioFallback] audio ended');
+        URL.revokeObjectURL(url);
+        onEnd?.();
+      };
+      audio.onerror = (e) => {
+        console.error('[playAudioFallback] audio error', e);
+        URL.revokeObjectURL(url);
+        onEnd?.();
+      };
+
+      const doPlay = () => {
+        console.log('[playAudioFallback] doPlay');
+        audio.play().then(() => console.log('[playAudioFallback] play success')).catch((e) => {
+          console.error('[playAudioFallback] play error', e);
+          URL.revokeObjectURL(url);
+          onEnd?.();
+        });
+      };
+
+      if (isAndroidWechatRef.current) {
+        wechatUnlockAudio(doPlay);
+      } else {
+        doPlay();
+      }
+    } catch (e) {
+      console.error('[playAudioFallback] fetch error', e);
+      onEnd?.();
     }
   }, []);
+
+  // 一键在系统浏览器中打开（Android）
+  const openInSystemBrowser = () => {
+    const url = window.location.href;
+    const intentUrl = `intent://${url.replace(/^https?:\/\//, '')}#Intent;scheme=https;action=android.intent.action.VIEW;end;`;
+    console.log('[openInSystemBrowser] trying intent:', intentUrl);
+    window.location.href = intentUrl;
+  };
 
   // 语音合成
   const speakWord = useCallback((text: string, rate: number, onEnd?: () => void) => {
@@ -428,6 +466,22 @@ function App() {
             >
               <Volume2 className="w-4 h-4 mr-2" />
               开启声音
+            </Button>
+          </div>
+        )}
+
+        {/* Android 微信引导 */}
+        {isAndroidWechat && (
+          <div className="bg-blue-50 border-2 border-blue-200 rounded-xl p-4 mb-4">
+            <p className="text-blue-700 text-sm mb-3">
+              如果播放没有声音，请在系统浏览器中打开以获得最佳体验。
+            </p>
+            <Button
+              onClick={openInSystemBrowser}
+              variant="outline"
+              className="w-full border-blue-400 text-blue-600 hover:bg-blue-100"
+            >
+              一键打开
             </Button>
           </div>
         )}
