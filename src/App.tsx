@@ -20,12 +20,19 @@ function App() {
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const resumeRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
-  const blobUrlRef = useRef<string | null>(null);
   const isPlayingRef = useRef(isPlaying);
   const speedRef = useRef(speed);
   const repeatCountRef = useRef(repeatCount);
   const intervalSecondsRef = useRef(intervalSeconds);
   const isAndroidWechatRef = useRef(isAndroidWechat);
+  const playbackIdRef = useRef(0); // 用于取消过期的播放回调
+
+  // 音频 Blob 缓存：text → Blob（带正确 MIME type），同一单词不重复请求
+  const audioCacheRef = useRef<Map<string, Blob>>(new Map());
+  // 当前正在 fetch 的 text → Promise，防止同一单词并发请求
+  const fetchingRef = useRef<Map<string, Promise<Blob | null>>>(new Map());
+  // 当前播放使用的 blob URL（仅用于跟踪需要 revoke 的 URL）
+  const currentBlobUrlRef = useRef<string | null>(null);
 
   useEffect(() => { isPlayingRef.current = isPlaying; }, [isPlaying]);
   useEffect(() => { speedRef.current = speed; }, [speed]);
@@ -33,28 +40,55 @@ function App() {
   useEffect(() => { intervalSecondsRef.current = intervalSeconds; }, [intervalSeconds]);
   useEffect(() => { isAndroidWechatRef.current = isAndroidWechat; }, [isAndroidWechat]);
 
-  const cleanupAudio = () => {
+  // 获取或创建唯一的 Audio 元素（全程只创建一个）
+  const getAudioElement = () => {
+    if (!audioRef.current) {
+      const audio = new Audio();
+      audio.preload = 'auto';
+      audioRef.current = audio;
+      console.log('[Audio] created single audio element');
+    }
+    return audioRef.current;
+  };
+
+  // 停止当前播放（不销毁 Audio 元素）
+  const stopCurrentAudio = () => {
+    const audio = audioRef.current;
+    if (audio) {
+      try {
+        audio.pause();
+        audio.currentTime = 0;
+      } catch { /* ignore */ }
+      audio.onended = null;
+      audio.onerror = null;
+    }
+    // revoke 上一次的 blob URL（blob 本身保留在缓存里，URL 是临时的）
+    if (currentBlobUrlRef.current) {
+      URL.revokeObjectURL(currentBlobUrlRef.current);
+      currentBlobUrlRef.current = null;
+    }
+  };
+
+  // 完全销毁 Audio 元素（仅在组件卸载时调用）
+  const destroyAudio = () => {
+    stopCurrentAudio();
     if (audioRef.current) {
       try {
-        audioRef.current.pause();
-      } catch { /* ignore */ }
-      try {
-        audioRef.current.src = '';
+        audioRef.current.removeAttribute('src');
         audioRef.current.load();
       } catch { /* ignore */ }
       audioRef.current = null;
     }
-    if (blobUrlRef.current) {
-      URL.revokeObjectURL(blobUrlRef.current);
-      blobUrlRef.current = null;
-    }
+    // 清理所有缓存
+    audioCacheRef.current.clear();
+    fetchingRef.current.clear();
   };
 
   useEffect(() => {
     return () => {
       if (timeoutRef.current) clearTimeout(timeoutRef.current);
       if (resumeRef.current) clearInterval(resumeRef.current);
-      cleanupAudio();
+      destroyAudio();
       if ('speechSynthesis' in window) {
         window.speechSynthesis.cancel();
       }
@@ -140,187 +174,189 @@ function App() {
     }
   };
 
-  // Android 微信 fallback：通过新 TTS 服务播放，支持 stream/json/file 自动降级
-  const playAudioFallback = useCallback(async (text: string, onEnd?: () => void) => {
-    console.log('[playAudioFallback] text:', text);
-    cleanupAudio();
+  // 确保 Blob 具有正确的音频 MIME type
+  const ensureAudioMimeType = (blob: Blob): Blob => {
+    const audioMimeTypes = ['audio/mpeg', 'audio/mp3', 'audio/wav', 'audio/ogg', 'audio/webm', 'audio/aac'];
+    if (audioMimeTypes.some(t => blob.type.startsWith(t))) {
+      return blob;
+    }
+    console.log('[TTS] fixing MIME type from', blob.type, 'to audio/mpeg');
+    return new Blob([blob], { type: 'audio/mpeg' });
+  };
 
+  // 从 TTS 服务获取音频 Blob（带降级策略），缓存结果
+  const fetchAudioBlob = useCallback(async (text: string): Promise<Blob | null> => {
+    // 1. 看缓存
+    const cached = audioCacheRef.current.get(text);
+    if (cached) {
+      console.log('[TTS] cache hit for:', text);
+      return cached;
+    }
+
+    // 2. 看是否正在 fetch（防止并发重复请求同一单词）
+    const inflight = fetchingRef.current.get(text);
+    if (inflight) {
+      console.log('[TTS] waiting for inflight fetch:', text);
+      return inflight;
+    }
+
+    // 3. 发起请求
     const TTS_BASE = 'https://eeda.yissheng.top';
+    const MAX_RETRIES = 2;
+    const MODES = ['file', 'stream', 'json'] as const;
 
-    const playFromUrl = (audioUrl: string, isBlob = false) => {
-      console.log('[playAudioFallback] playFromUrl:', audioUrl, 'isBlob:', isBlob);
-      cleanupAudio();
+    const doFetch = async (): Promise<Blob | null> => {
+      for (const mode of MODES) {
+        for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+          try {
+            if (attempt > 0) {
+              await new Promise(r => setTimeout(r, 300 * attempt));
+            }
 
-      let ended = false;
-      const callOnEnd = () => {
-        if (ended) {
-          console.log('[playAudioFallback] onEnd already called, skipping');
-          return;
-        }
-        ended = true;
-        console.log('[playAudioFallback] calling onEnd');
-        onEnd?.();
-      };
+            console.log(`[TTS] ${mode} attempt ${attempt} for: ${text}`);
+            const response = await fetch(`${TTS_BASE}/api/tts`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ text, voice: 'zh-CN-XiaoxiaoNeural', return_type: mode }),
+            });
 
-      const audio = new Audio(audioUrl);
-      audioRef.current = audio;
-      if (isBlob) {
-        blobUrlRef.current = audioUrl;
-      }
+            if (!response.ok) {
+              console.warn(`[TTS] ${mode} response ${response.status}`);
+              continue;
+            }
 
-      audio.addEventListener('loadstart', () => console.log('[playAudioFallback] audio loadstart'));
-      audio.addEventListener('canplay', () => console.log('[playAudioFallback] audio canplay'));
-      audio.addEventListener('canplaythrough', () => console.log('[playAudioFallback] audio canplaythrough'));
-      audio.addEventListener('stalled', () => console.warn('[playAudioFallback] audio stalled'));
-      audio.addEventListener('abort', () => console.warn('[playAudioFallback] audio abort'));
-
-      audio.onended = () => {
-        console.log('[playAudioFallback] audio ended');
-        if (isBlob && blobUrlRef.current === audioUrl) {
-          URL.revokeObjectURL(audioUrl);
-          blobUrlRef.current = null;
-        }
-        callOnEnd();
-      };
-      audio.onerror = (e) => {
-        console.error('[playAudioFallback] audio error', e);
-        if (isBlob && blobUrlRef.current === audioUrl) {
-          URL.revokeObjectURL(audioUrl);
-          blobUrlRef.current = null;
-        }
-        callOnEnd();
-      };
-
-      const doPlay = () => {
-        console.log('[playAudioFallback] doPlay');
-        audio.play().then(() => console.log('[playAudioFallback] play success')).catch((e) => {
-          console.error('[playAudioFallback] play error', e);
-          if (isBlob && blobUrlRef.current === audioUrl) {
-            URL.revokeObjectURL(audioUrl);
-            blobUrlRef.current = null;
+            if (mode === 'json') {
+              const data = await response.json();
+              const downloadUrl = data?.data?.download_url;
+              if (!downloadUrl) continue;
+              const fullUrl = downloadUrl.startsWith('http') ? downloadUrl : `${TTS_BASE}${downloadUrl}`;
+              // 下载实际音频文件
+              const audioResp = await fetch(fullUrl);
+              if (!audioResp.ok) continue;
+              const blob = ensureAudioMimeType(await audioResp.blob());
+              if (blob.size > 0) {
+                audioCacheRef.current.set(text, blob);
+                return blob;
+              }
+            } else {
+              const blob = ensureAudioMimeType(await response.blob());
+              if (blob.size > 0) {
+                audioCacheRef.current.set(text, blob);
+                return blob;
+              }
+              console.warn(`[TTS] ${mode} blob empty`);
+            }
+          } catch (e) {
+            console.error(`[TTS] ${mode} attempt ${attempt} error`, e);
           }
-          callOnEnd();
-        });
-      };
-
-      if (isAndroidWechatRef.current) {
-        wechatUnlockAudio(doPlay);
-      } else {
-        doPlay();
+        }
       }
+      return null;
     };
 
-    // 模式1：file（直接返回音频文件流，最优先）
-    try {
-      console.log('[playAudioFallback] trying file mode...');
-      const response = await fetch(`${TTS_BASE}/api/tts`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text, voice: 'zh-CN-XiaoxiaoNeural', return_type: 'file' }),
-      });
-      console.log('[playAudioFallback] file response status:', response.status);
-
-      if (response.ok) {
-        const blob = await response.blob();
-        console.log('[playAudioFallback] file blob size:', blob.size, 'type:', blob.type);
-        if (blob.size > 0) {
-          const url = URL.createObjectURL(blob);
-          playFromUrl(url, true);
-          return;
-        } else {
-          console.warn('[playAudioFallback] file blob is empty');
-        }
-      } else {
-        console.warn('[playAudioFallback] file response not ok');
-      }
-    } catch (e) {
-      console.error('[playAudioFallback] file fetch error', e);
-    }
-
-    // 模式2：stream（直接返回音频流）
-    try {
-      console.log('[playAudioFallback] trying file mode...');
-      const response = await fetch(`${TTS_BASE}/api/tts`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text, voice: 'zh-CN-XiaoxiaoNeural', return_type: 'file' }),
-      });
-      console.log('[playAudioFallback] file response status:', response.status);
-
-      if (response.ok) {
-        const blob = await response.blob();
-        console.log('[playAudioFallback] file blob size:', blob.size, 'type:', blob.type);
-        if (blob.size > 0) {
-          const url = URL.createObjectURL(blob);
-          playFromUrl(url, true);
-          return;
-        } else {
-          console.warn('[playAudioFallback] file blob is empty');
-        }
-      } else {
-        console.warn('[playAudioFallback] file response not ok');
-      }
-    } catch (e) {
-      console.error('[playAudioFallback] file fetch error', e);
-    }
-
-    // 模式2：stream（直接返回音频流）
-    try {
-      console.log('[playAudioFallback] trying stream mode...');
-      const response = await fetch(`${TTS_BASE}/api/tts`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text, voice: 'zh-CN-XiaoxiaoNeural', return_type: 'stream' }),
-      });
-      console.log('[playAudioFallback] stream response status:', response.status);
-
-      if (response.ok) {
-        const blob = await response.blob();
-        console.log('[playAudioFallback] stream blob size:', blob.size, 'type:', blob.type);
-        if (blob.size > 0) {
-          const url = URL.createObjectURL(blob);
-          console.log('[playAudioFallback] stream blob URL created');
-          playFromUrl(url, true);
-          return;
-        } else {
-          console.warn('[playAudioFallback] stream blob is empty, will fallback');
-        }
-      } else {
-        console.warn('[playAudioFallback] stream response not ok, will fallback');
-      }
-    } catch (e) {
-      console.error('[playAudioFallback] stream fetch error', e);
-    }
-
-    // 模式3：json（获取 download_url）
-    try {
-      console.log('[playAudioFallback] trying json mode...');
-      const response = await fetch(`${TTS_BASE}/api/tts`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text, voice: 'zh-CN-XiaoxiaoNeural', return_type: 'json' }),
-      });
-      console.log('[playAudioFallback] json response status:', response.status);
-
-      if (response.ok) {
-        const data = await response.json();
-        console.log('[playAudioFallback] json data:', data);
-        const downloadUrl = data?.data?.download_url;
-        if (downloadUrl) {
-          const fullUrl = downloadUrl.startsWith('http') ? downloadUrl : `${TTS_BASE}${downloadUrl}`;
-          console.log('[playAudioFallback] json fullUrl:', fullUrl);
-          playFromUrl(fullUrl);
-          return;
-        } else {
-          console.warn('[playAudioFallback] json no download_url, will fallback');
-        }
-      } else {
-        console.warn('[playAudioFallback] json response not ok, will fallback');
-      }
-    } catch (e) {
-      console.error('[playAudioFallback] json fetch error', e);
-    }
+    const promise = doFetch().finally(() => {
+      fetchingRef.current.delete(text);
+    });
+    fetchingRef.current.set(text, promise);
+    return promise;
   }, []);
+
+  // 用缓存的 Blob 播放音频（复用同一个 Audio 元素）
+  const playAudioFallback = useCallback(async (text: string, onEnd?: () => void) => {
+    console.log('[playAudioFallback] text:', text);
+
+    const currentPlaybackId = ++playbackIdRef.current;
+
+    // 停止当前播放
+    stopCurrentAudio();
+
+    // 获取音频数据（优先走缓存）
+    const blob = await fetchAudioBlob(text);
+
+    // 被更新的播放请求覆盖了
+    if (playbackIdRef.current !== currentPlaybackId) {
+      console.log('[playAudioFallback] stale, skipping');
+      return;
+    }
+
+    if (!blob) {
+      console.error('[playAudioFallback] failed to get audio for:', text);
+      onEnd?.();
+      return;
+    }
+
+    // 从缓存的 Blob 创建临时 URL（播放完毕后 revoke）
+    const blobUrl = URL.createObjectURL(blob);
+    currentBlobUrlRef.current = blobUrl;
+
+    const audio = getAudioElement();
+
+    let ended = false;
+    const callOnEnd = () => {
+      if (ended) return;
+      if (playbackIdRef.current !== currentPlaybackId) return;
+      ended = true;
+      // revoke 临时 URL（Blob 仍保留在缓存中）
+      if (currentBlobUrlRef.current === blobUrl) {
+        URL.revokeObjectURL(blobUrl);
+        currentBlobUrlRef.current = null;
+      }
+      console.log('[playAudioFallback] onEnd');
+      onEnd?.();
+    };
+
+    audio.onended = () => {
+      console.log('[playAudioFallback] audio ended');
+      callOnEnd();
+    };
+
+    audio.onerror = (e) => {
+      const mediaError = audio.error;
+      console.error('[playAudioFallback] audio error', e, 'code:', mediaError?.code, 'message:', mediaError?.message);
+      // 播放出错时清除缓存，下次重新 fetch
+      audioCacheRef.current.delete(text);
+      callOnEnd();
+    };
+
+    const doPlay = () => {
+      console.log('[playAudioFallback] setting src and playing');
+      audio.src = blobUrl;
+
+      const onReady = () => {
+        audio.removeEventListener('canplaythrough', onReady);
+        audio.play()
+          .then(() => console.log('[playAudioFallback] play success'))
+          .catch((e) => {
+            console.error('[playAudioFallback] play error', e);
+            audioCacheRef.current.delete(text);
+            callOnEnd();
+          });
+      };
+
+      if (audio.readyState >= 4) {
+        onReady();
+      } else {
+        audio.addEventListener('canplaythrough', onReady, { once: true });
+      }
+
+      // 超时保护
+      setTimeout(() => {
+        if (!ended && audio === audioRef.current && playbackIdRef.current === currentPlaybackId) {
+          audio.removeEventListener('canplaythrough', onReady);
+          console.warn('[playAudioFallback] timeout, forcing play');
+          audio.play()
+            .then(() => console.log('[playAudioFallback] forced play ok'))
+            .catch(() => { audioCacheRef.current.delete(text); callOnEnd(); });
+        }
+      }, 8000);
+    };
+
+    if (isAndroidWechatRef.current) {
+      wechatUnlockAudio(doPlay);
+    } else {
+      doPlay();
+    }
+  }, [fetchAudioBlob]);
 
   // 一键在系统浏览器中打开（Android）
   const openInSystemBrowser = () => {
@@ -386,7 +422,7 @@ function App() {
       timeoutRef.current = null;
     }
     stopResumeHack();
-    cleanupAudio();
+    stopCurrentAudio();
     if ('speechSynthesis' in window) {
       window.speechSynthesis.cancel();
       window.speechSynthesis.resume();
@@ -533,6 +569,8 @@ function App() {
     setRepeatIndex(0);
     setIsShared(false);
     setAudioEnabled(false);
+    // 清理音频缓存，释放内存
+    audioCacheRef.current.clear();
     window.history.replaceState({}, '', window.location.pathname);
   };
 
