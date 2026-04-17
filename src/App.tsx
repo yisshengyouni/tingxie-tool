@@ -261,6 +261,41 @@ function App() {
     return promise;
   }, []);
 
+  // 预加载多个单词的音频（并发，不阻塞当前播放）
+  const PREFETCH_CONCURRENCY = 3; // 同时最多 3 个并发请求
+  const prefetchAudio = useCallback((words: string[], startIdx: number, count?: number) => {
+    const end = count ? Math.min(startIdx + count, words.length) : words.length;
+    const toFetch = words.slice(startIdx, end).filter(w => {
+      // 跳过已缓存和正在请求的
+      return !audioCacheRef.current.has(w) && !fetchingRef.current.has(w);
+    });
+
+    if (toFetch.length === 0) return;
+    console.log(`[Prefetch] queuing ${toFetch.length} words from index ${startIdx}:`, toFetch);
+
+    // 用简单的并发控制（不超过 PREFETCH_CONCURRENCY 个同时请求）
+    let running = 0;
+    let idx = 0;
+
+    const next = () => {
+      while (running < PREFETCH_CONCURRENCY && idx < toFetch.length) {
+        const word = toFetch[idx++];
+        running++;
+        fetchAudioBlob(word)
+          .then(blob => {
+            if (blob) console.log(`[Prefetch] cached: ${word} (${blob.size} bytes)`);
+            else console.warn(`[Prefetch] failed: ${word}`);
+          })
+          .catch(() => {})
+          .finally(() => {
+            running--;
+            next();
+          });
+      }
+    };
+    next();
+  }, [fetchAudioBlob]);
+
   // 用缓存的 Blob 播放音频（复用同一个 Audio 元素）
   const playAudioFallback = useCallback(async (text: string, onEnd?: () => void) => {
     console.log('[playAudioFallback] text:', text);
@@ -434,6 +469,11 @@ function App() {
     setCurrentIndex(wordIdx);
     setRepeatIndex(repeat);
 
+    // 提前预加载接下来的几个词（仅在第一遍时触发，避免重复预加载）
+    if (repeat === 1) {
+      prefetchAudio(list, wordIdx + 1, PREFETCH_CONCURRENCY);
+    }
+
     speakWord(list[wordIdx], speedRef.current, () => {
       if (!isPlayingRef.current) return;
 
@@ -447,7 +487,7 @@ function App() {
         }, intervalSecondsRef.current * 1000);
       }
     });
-  }, [speakWord]);
+  }, [speakWord, prefetchAudio]);
 
   // 开始播放
   const startPlayback = () => {
@@ -464,6 +504,9 @@ function App() {
     setRepeatIndex(0);
 
     startResumeHack();
+
+    // 并发预加载所有词的音频（后台静默执行，不阻塞播放）
+    prefetchAudio(list, 0);
 
     // 同步播放第一个词，确保在用户手势事件内触发
     speakWord(list[0], speed, () => {
