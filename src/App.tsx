@@ -595,6 +595,22 @@ function App() {
     }
   };
 
+  // 清除服务端缓存
+  const clearServerCache = async () => {
+    try {
+      const res = await fetch('https://eeda.yissheng.top/api/tts/cache/clear', {
+        method: 'POST',
+      });
+      if (res.ok) {
+        console.log('[Cache] server cache cleared');
+      } else {
+        console.warn('[Cache] failed to clear server cache', res.status);
+      }
+    } catch (e) {
+      console.error('[Cache] error clearing server cache', e);
+    }
+  };
+
   // 清空
   const clearAll = () => {
     stopPlayback();
@@ -889,7 +905,17 @@ function App() {
         {/* 使用说明 */}
         <div className="mt-6 text-center text-amber-500 text-sm space-y-1">
           <p>💡 点击分享按钮复制链接，朋友打开即可直接播放</p>
-          {isWechat && <p>🔊 微信用户请先点击"开启声音"按钮</p>}
+          {isWechat && <p>🔊 微信用户请先点击"开始听写"按钮</p>}
+        </div>
+
+        {/* 清除缓存 */}
+        <div className="mt-4 text-center">
+          <button
+            onClick={clearServerCache}
+            className="text-xs text-amber-300 hover:text-amber-400 transition-colors"
+          >
+            清除缓存
+          </button>
         </div>
       </div>
     </div>
