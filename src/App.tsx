@@ -152,42 +152,66 @@ function App() {
     }
   };
 
-  // Android 微信 fallback：使用有道 TTS 在线发音
+  // Android 微信 fallback：使用在线 TTS 发音
   const playAudioFallback = useCallback((text: string, onEnd?: () => void) => {
     console.log('[playAudioFallback] text:', text);
     if (audioRef.current) {
       audioRef.current.pause();
       audioRef.current = null;
     }
-    const url = `https://dict.youdao.com/dictvoice?audio=${encodeURIComponent(text)}`;
-    console.log('[playAudioFallback] audio url:', url);
-    const audio = new Audio(url);
-    audioRef.current = audio;
-    audio.onended = () => {
-      console.log('[playAudioFallback] audio ended');
-      onEnd?.();
-    };
-    audio.onerror = (e) => {
-      console.error('[playAudioFallback] audio error for:', text, e);
-      onEnd?.();
-    };
-    audio.oncanplay = () => {
-      console.log('[playAudioFallback] audio canplay');
-    };
 
-    const doPlay = () => {
-      console.log('[playAudioFallback] doPlay called');
-      audio.play().then(() => console.log('[playAudioFallback] audio play success')).catch((e) => {
-        console.error('[playAudioFallback] audio play error:', e);
+    const url = `https://dict.youdao.com/dictvoice?audio=${encodeURIComponent(text)}&type=1`;
+    const baiduUrl = `https://tts.baidu.com/text2audio?tex=${encodeURIComponent(text)}&lan=zh&cuid=tingxie&ctp=1&spd=5`;
+    console.log('[playAudioFallback] trying url:', url);
+    console.log('[playAudioFallback] backup url:', baiduUrl);
+
+    const tryPlay = (src: string, isBaidu = false) => {
+      const audio = new Audio(src);
+      audioRef.current = audio;
+      audio.onended = () => {
+        console.log('[playAudioFallback] audio ended');
         onEnd?.();
-      });
+      };
+      audio.onerror = (e) => {
+        console.error('[playAudioFallback] audio error for:', text, 'isBaidu:', isBaidu, e);
+        if (!isBaidu) {
+          console.log('[playAudioFallback] switching to baidu url');
+          tryPlay(baiduUrl, true);
+        } else {
+          onEnd?.();
+        }
+      };
+      audio.oncanplay = () => {
+        console.log('[playAudioFallback] audio canplay, isBaidu:', isBaidu);
+      };
+      audio.onstalled = () => {
+        console.warn('[playAudioFallback] audio stalled, isBaidu:', isBaidu);
+      };
+      audio.onabort = () => {
+        console.warn('[playAudioFallback] audio abort, isBaidu:', isBaidu);
+      };
+
+      const doPlay = () => {
+        console.log('[playAudioFallback] doPlay called, isBaidu:', isBaidu);
+        audio.play().then(() => console.log('[playAudioFallback] audio play success, isBaidu:', isBaidu)).catch((e) => {
+          console.error('[playAudioFallback] audio play error, isBaidu:', isBaidu, e);
+          if (!isBaidu) {
+            console.log('[playAudioFallback] switching to baidu url after play error');
+            tryPlay(baiduUrl, true);
+          } else {
+            onEnd?.();
+          }
+        });
+      };
+
+      if (isAndroidWechatRef.current) {
+        wechatUnlockAudio(doPlay);
+      } else {
+        doPlay();
+      }
     };
 
-    if (isAndroidWechatRef.current) {
-      wechatUnlockAudio(doPlay);
-    } else {
-      doPlay();
-    }
+    tryPlay(url);
   }, []);
 
   // 语音合成
