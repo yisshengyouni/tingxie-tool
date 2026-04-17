@@ -86,13 +86,32 @@ function App() {
     }
   }, []);
 
+  // 微信 JSBridge 音频解锁通用方法
+  const wechatUnlockAudio = (playFn: () => void) => {
+    const wx = (window as typeof window & { WeixinJSBridge?: { invoke: (name: string, args: object, cb: () => void) => void } }).WeixinJSBridge;
+    if (wx && wx.invoke) {
+      wx.invoke('getNetworkType', {}, playFn);
+    } else {
+      document.addEventListener('WeixinJSBridgeReady', () => {
+        const wx2 = (window as typeof window & { WeixinJSBridge?: { invoke: (name: string, args: object, cb: () => void) => void } }).WeixinJSBridge;
+        if (wx2 && wx2.invoke) {
+          wx2.invoke('getNetworkType', {}, playFn);
+        } else {
+          playFn();
+        }
+      }, false);
+    }
+  };
+
   // 初始化音频（解决微信自动播放限制）
   const initAudio = () => {
     if (isAndroidWechat) {
-      // Android 微信：播放一个极短静音音频来解锁 WebView 音频策略
-      const silentAudio = new Audio('data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA');
-      silentAudio.play().catch(() => {});
-      setAudioEnabled(true);
+      // Android 微信：必须通过 WeixinJSBridge 解锁音频
+      wechatUnlockAudio(() => {
+        const silentAudio = new Audio('data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA');
+        silentAudio.play().catch(() => {});
+        setAudioEnabled(true);
+      });
       return;
     }
 
@@ -122,10 +141,19 @@ function App() {
       console.error('Audio fallback error for:', text);
       onEnd?.();
     };
-    audio.play().catch((e) => {
-      console.error('Audio play error:', e);
-      onEnd?.();
-    });
+
+    const doPlay = () => {
+      audio.play().catch((e) => {
+        console.error('Audio play error:', e);
+        onEnd?.();
+      });
+    };
+
+    if (isAndroidWechatRef.current) {
+      wechatUnlockAudio(doPlay);
+    } else {
+      doPlay();
+    }
   }, []);
 
   // 语音合成
