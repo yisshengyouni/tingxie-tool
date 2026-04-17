@@ -19,20 +19,27 @@ function App() {
   const [isAndroidWechat, setIsAndroidWechat] = useState(false);
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const resumeRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
   const isPlayingRef = useRef(isPlaying);
   const speedRef = useRef(speed);
   const repeatCountRef = useRef(repeatCount);
   const intervalSecondsRef = useRef(intervalSeconds);
+  const isAndroidWechatRef = useRef(isAndroidWechat);
 
   useEffect(() => { isPlayingRef.current = isPlaying; }, [isPlaying]);
   useEffect(() => { speedRef.current = speed; }, [speed]);
   useEffect(() => { repeatCountRef.current = repeatCount; }, [repeatCount]);
   useEffect(() => { intervalSecondsRef.current = intervalSeconds; }, [intervalSeconds]);
+  useEffect(() => { isAndroidWechatRef.current = isAndroidWechat; }, [isAndroidWechat]);
 
   useEffect(() => {
     return () => {
       if (timeoutRef.current) clearTimeout(timeoutRef.current);
       if (resumeRef.current) clearInterval(resumeRef.current);
+      if (audioRef.current) {
+        audioRef.current.pause();
+        audioRef.current = null;
+      }
       if ('speechSynthesis' in window) {
         window.speechSynthesis.cancel();
       }
@@ -79,8 +86,34 @@ function App() {
     }
   }, []);
 
+  // 微信 JSBridge 音频解锁
+  const wechatUnlockAudio = (playFn: () => void) => {
+    const wx = (window as typeof window & { WeixinJSBridge?: { invoke: (name: string, args: object, cb: () => void) => void } }).WeixinJSBridge;
+    if (wx && wx.invoke) {
+      wx.invoke('getNetworkType', {}, playFn);
+    } else {
+      document.addEventListener('WeixinJSBridgeReady', () => {
+        const wx2 = (window as typeof window & { WeixinJSBridge?: { invoke: (name: string, args: object, cb: () => void) => void } }).WeixinJSBridge;
+        if (wx2 && wx2.invoke) {
+          wx2.invoke('getNetworkType', {}, playFn);
+        } else {
+          playFn();
+        }
+      }, false);
+    }
+  };
+
   // 初始化音频（解决 iOS 微信自动播放限制）
   const initAudio = () => {
+    if (isAndroidWechat) {
+      wechatUnlockAudio(() => {
+        const silentAudio = new Audio('data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA');
+        silentAudio.play().catch(() => {});
+        setAudioEnabled(true);
+      });
+      return;
+    }
+
     if ('speechSynthesis' in window) {
       window.speechSynthesis.cancel();
       window.speechSynthesis.resume();
@@ -92,8 +125,41 @@ function App() {
     }
   };
 
+  // Android 微信 fallback：通过自有 API 代理播放 TTS
+  const playAudioFallback = useCallback((text: string, onEnd?: () => void) => {
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current = null;
+    }
+    const audio = new Audio(`/api/tts?text=${encodeURIComponent(text)}`);
+    audioRef.current = audio;
+    audio.onended = () => {
+      onEnd?.();
+    };
+    audio.onerror = () => {
+      onEnd?.();
+    };
+
+    const doPlay = () => {
+      audio.play().catch(() => {
+        onEnd?.();
+      });
+    };
+
+    if (isAndroidWechatRef.current) {
+      wechatUnlockAudio(doPlay);
+    } else {
+      doPlay();
+    }
+  }, []);
+
   // 语音合成
   const speakWord = useCallback((text: string, rate: number, onEnd?: () => void) => {
+    if (isAndroidWechatRef.current) {
+      playAudioFallback(text, onEnd);
+      return;
+    }
+
     if (!('speechSynthesis' in window)) {
       onEnd?.();
       return;
@@ -117,7 +183,7 @@ function App() {
     };
 
     window.speechSynthesis.speak(utterance);
-  }, []);
+  }, [playAudioFallback]);
 
   // iOS/微信兼容性：防止语音引擎被系统暂停后冻结
   const startResumeHack = () => {
@@ -143,6 +209,10 @@ function App() {
       timeoutRef.current = null;
     }
     stopResumeHack();
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current = null;
+    }
     if ('speechSynthesis' in window) {
       window.speechSynthesis.cancel();
       window.speechSynthesis.resume();
@@ -179,11 +249,6 @@ function App() {
 
   // 开始播放
   const startPlayback = () => {
-    if (isAndroidWechat && !('speechSynthesis' in window)) {
-      // Android 微信不支持 speechSynthesis，提示用户在浏览器中打开
-      return;
-    }
-
     if (isWechat && !audioEnabled) {
       initAudio();
     }
@@ -354,24 +419,16 @@ function App() {
               <VolumeX className="w-5 h-5" />
               <span className="font-medium">微信浏览器提示</span>
             </div>
-            {isAndroidWechat && !('speechSynthesis' in window) ? (
-              <p className="text-orange-600 text-sm">
-                Android 微信暂不支持语音朗读，请点击右上角"在浏览器中打开"继续使用。
-              </p>
-            ) : (
-              <>
-                <p className="text-orange-600 text-sm mb-3">
-                  微信需要点击"开启声音"按钮才能播放语音，或者点击右上角"在浏览器中打开"。
-                </p>
-                <Button
-                  onClick={initAudio}
-                  className="w-full bg-orange-500 hover:bg-orange-600 text-white"
-                >
-                  <Volume2 className="w-4 h-4 mr-2" />
-                  开启声音
-                </Button>
-              </>
-            )}
+            <p className="text-orange-600 text-sm mb-3">
+              微信需要点击"开启声音"按钮才能播放语音，或者点击右上角"在浏览器中打开"。
+            </p>
+            <Button
+              onClick={initAudio}
+              className="w-full bg-orange-500 hover:bg-orange-600 text-white"
+            >
+              <Volume2 className="w-4 h-4 mr-2" />
+              开启声音
+            </Button>
           </div>
         )}
 
@@ -592,8 +649,7 @@ function App() {
         {/* 使用说明 */}
         <div className="mt-6 text-center text-amber-500 text-sm space-y-1">
           <p>💡 点击分享按钮复制链接，朋友打开即可直接播放</p>
-          {isWechat && !isAndroidWechat && <p>🔊 微信用户请先点击"开启声音"按钮</p>}
-          {isAndroidWechat && <p>🔊 Android 微信用户请在浏览器中打开以获得语音朗读</p>}
+          {isWechat && <p>🔊 微信用户请先点击"开启声音"按钮</p>}
         </div>
       </div>
     </div>
