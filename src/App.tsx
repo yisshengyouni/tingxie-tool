@@ -20,6 +20,7 @@ function App() {
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const resumeRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const blobUrlRef = useRef<string | null>(null);
   const isPlayingRef = useRef(isPlaying);
   const speedRef = useRef(speed);
   const repeatCountRef = useRef(repeatCount);
@@ -32,14 +33,28 @@ function App() {
   useEffect(() => { intervalSecondsRef.current = intervalSeconds; }, [intervalSeconds]);
   useEffect(() => { isAndroidWechatRef.current = isAndroidWechat; }, [isAndroidWechat]);
 
+  const cleanupAudio = () => {
+    if (audioRef.current) {
+      try {
+        audioRef.current.pause();
+      } catch { /* ignore */ }
+      try {
+        audioRef.current.src = '';
+        audioRef.current.load();
+      } catch { /* ignore */ }
+      audioRef.current = null;
+    }
+    if (blobUrlRef.current) {
+      URL.revokeObjectURL(blobUrlRef.current);
+      blobUrlRef.current = null;
+    }
+  };
+
   useEffect(() => {
     return () => {
       if (timeoutRef.current) clearTimeout(timeoutRef.current);
       if (resumeRef.current) clearInterval(resumeRef.current);
-      if (audioRef.current) {
-        audioRef.current.pause();
-        audioRef.current = null;
-      }
+      cleanupAudio();
       if ('speechSynthesis' in window) {
         window.speechSynthesis.cancel();
       }
@@ -128,17 +143,19 @@ function App() {
   // Android 微信 fallback：通过新 TTS 服务播放，支持 stream/json/file 自动降级
   const playAudioFallback = useCallback(async (text: string, onEnd?: () => void) => {
     console.log('[playAudioFallback] text:', text);
-    if (audioRef.current) {
-      audioRef.current.pause();
-      audioRef.current = null;
-    }
+    cleanupAudio();
 
     const TTS_BASE = 'https://eeda.yissheng.top';
 
-    const playFromUrl = (audioUrl: string) => {
-      console.log('[playAudioFallback] playFromUrl:', audioUrl);
+    const playFromUrl = (audioUrl: string, isBlob = false) => {
+      console.log('[playAudioFallback] playFromUrl:', audioUrl, 'isBlob:', isBlob);
+      cleanupAudio();
+
       const audio = new Audio(audioUrl);
       audioRef.current = audio;
+      if (isBlob) {
+        blobUrlRef.current = audioUrl;
+      }
 
       audio.addEventListener('loadstart', () => console.log('[playAudioFallback] audio loadstart'));
       audio.addEventListener('canplay', () => console.log('[playAudioFallback] audio canplay'));
@@ -148,10 +165,18 @@ function App() {
 
       audio.onended = () => {
         console.log('[playAudioFallback] audio ended');
+        if (isBlob && blobUrlRef.current === audioUrl) {
+          URL.revokeObjectURL(audioUrl);
+          blobUrlRef.current = null;
+        }
         onEnd?.();
       };
       audio.onerror = (e) => {
         console.error('[playAudioFallback] audio error', e);
+        if (isBlob && blobUrlRef.current === audioUrl) {
+          URL.revokeObjectURL(audioUrl);
+          blobUrlRef.current = null;
+        }
         onEnd?.();
       };
 
@@ -159,6 +184,10 @@ function App() {
         console.log('[playAudioFallback] doPlay');
         audio.play().then(() => console.log('[playAudioFallback] play success')).catch((e) => {
           console.error('[playAudioFallback] play error', e);
+          if (isBlob && blobUrlRef.current === audioUrl) {
+            URL.revokeObjectURL(audioUrl);
+            blobUrlRef.current = null;
+          }
           onEnd?.();
         });
       };
@@ -186,7 +215,7 @@ function App() {
         if (blob.size > 0) {
           const url = URL.createObjectURL(blob);
           console.log('[playAudioFallback] stream blob URL created');
-          playFromUrl(url);
+          playFromUrl(url, true);
           return;
         } else {
           console.warn('[playAudioFallback] stream blob is empty, will fallback');
@@ -242,7 +271,7 @@ function App() {
         console.log('[playAudioFallback] file blob size:', blob.size, 'type:', blob.type);
         if (blob.size > 0) {
           const url = URL.createObjectURL(blob);
-          playFromUrl(url);
+          playFromUrl(url, true);
           return;
         } else {
           console.warn('[playAudioFallback] file blob is empty');
@@ -325,10 +354,7 @@ function App() {
       timeoutRef.current = null;
     }
     stopResumeHack();
-    if (audioRef.current) {
-      audioRef.current.pause();
-      audioRef.current = null;
-    }
+    cleanupAudio();
     if ('speechSynthesis' in window) {
       window.speechSynthesis.cancel();
       window.speechSynthesis.resume();
