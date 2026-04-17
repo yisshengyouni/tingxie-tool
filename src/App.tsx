@@ -16,22 +16,30 @@ function App() {
   const [isShared, setIsShared] = useState(false);
   const [audioEnabled, setAudioEnabled] = useState(false);
   const [isWechat, setIsWechat] = useState(false);
+  const [isAndroidWechat, setIsAndroidWechat] = useState(false);
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const resumeRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
   const isPlayingRef = useRef(isPlaying);
   const speedRef = useRef(speed);
   const repeatCountRef = useRef(repeatCount);
   const intervalSecondsRef = useRef(intervalSeconds);
+  const isAndroidWechatRef = useRef(isAndroidWechat);
 
   useEffect(() => { isPlayingRef.current = isPlaying; }, [isPlaying]);
   useEffect(() => { speedRef.current = speed; }, [speed]);
   useEffect(() => { repeatCountRef.current = repeatCount; }, [repeatCount]);
   useEffect(() => { intervalSecondsRef.current = intervalSeconds; }, [intervalSeconds]);
+  useEffect(() => { isAndroidWechatRef.current = isAndroidWechat; }, [isAndroidWechat]);
 
   useEffect(() => {
     return () => {
       if (timeoutRef.current) clearTimeout(timeoutRef.current);
       if (resumeRef.current) clearInterval(resumeRef.current);
+      if (audioRef.current) {
+        audioRef.current.pause();
+        audioRef.current = null;
+      }
       if ('speechSynthesis' in window) {
         window.speechSynthesis.cancel();
       }
@@ -42,7 +50,9 @@ function App() {
   useEffect(() => {
     const ua = navigator.userAgent.toLowerCase();
     const isWeixin = ua.includes('micromessenger');
+    const isAndroid = ua.includes('android');
     setIsWechat(isWeixin);
+    setIsAndroidWechat(isWeixin && isAndroid);
   }, []);
 
   // 解析输入的生词
@@ -78,6 +88,14 @@ function App() {
 
   // 初始化音频（解决微信自动播放限制）
   const initAudio = () => {
+    if (isAndroidWechat) {
+      // Android 微信：播放一个极短静音音频来解锁 WebView 音频策略
+      const silentAudio = new Audio('data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA');
+      silentAudio.play().catch(() => {});
+      setAudioEnabled(true);
+      return;
+    }
+
     if ('speechSynthesis' in window) {
       window.speechSynthesis.cancel();
       window.speechSynthesis.resume();
@@ -89,8 +107,34 @@ function App() {
     }
   };
 
+  // Android 微信 fallback：使用有道 TTS 在线发音
+  const playAudioFallback = useCallback((text: string, onEnd?: () => void) => {
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current = null;
+    }
+    const audio = new Audio(`https://dict.youdao.com/dictvoice?audio=${encodeURIComponent(text)}`);
+    audioRef.current = audio;
+    audio.onended = () => {
+      onEnd?.();
+    };
+    audio.onerror = () => {
+      console.error('Audio fallback error for:', text);
+      onEnd?.();
+    };
+    audio.play().catch((e) => {
+      console.error('Audio play error:', e);
+      onEnd?.();
+    });
+  }, []);
+
   // 语音合成
   const speakWord = useCallback((text: string, rate: number, onEnd?: () => void) => {
+    if (isAndroidWechatRef.current) {
+      playAudioFallback(text, onEnd);
+      return;
+    }
+
     if (!('speechSynthesis' in window)) {
       onEnd?.();
       return;
@@ -120,7 +164,7 @@ function App() {
     };
 
     window.speechSynthesis.speak(utterance);
-  }, []);
+  }, [playAudioFallback]);
 
   // iOS/微信兼容性：防止语音引擎被系统暂停后冻结
   const startResumeHack = () => {
@@ -146,6 +190,10 @@ function App() {
       timeoutRef.current = null;
     }
     stopResumeHack();
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current = null;
+    }
     if ('speechSynthesis' in window) {
       window.speechSynthesis.cancel();
       window.speechSynthesis.resume();
