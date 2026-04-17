@@ -53,6 +53,19 @@ function App() {
     const isAndroid = ua.includes('android');
     setIsWechat(isWeixin);
     setIsAndroidWechat(isWeixin && isAndroid);
+    console.log('[Env] UA:', navigator.userAgent);
+    console.log('[Env] isWechat:', isWeixin, 'isAndroidWechat:', isWeixin && isAndroid);
+    console.log('[Env] speechSynthesis:', 'speechSynthesis' in window);
+    console.log('[Env] WeixinJSBridge:', typeof (window as typeof window & { WeixinJSBridge?: unknown }).WeixinJSBridge);
+    if ('speechSynthesis' in window) {
+      const voices = window.speechSynthesis.getVoices();
+      console.log('[Env] voices count:', voices.length);
+      console.log('[Env] voices:', voices.map(v => `${v.name}(${v.lang})`));
+      window.speechSynthesis.onvoiceschanged = () => {
+        const updated = window.speechSynthesis.getVoices();
+        console.log('[Env] voices updated count:', updated.length);
+      };
+    }
   }, []);
 
   // 解析输入的生词
@@ -88,15 +101,26 @@ function App() {
 
   // 微信 JSBridge 音频解锁通用方法
   const wechatUnlockAudio = (playFn: () => void) => {
+    console.log('[wechatUnlockAudio] called');
     const wx = (window as typeof window & { WeixinJSBridge?: { invoke: (name: string, args: object, cb: () => void) => void } }).WeixinJSBridge;
     if (wx && wx.invoke) {
-      wx.invoke('getNetworkType', {}, playFn);
+      console.log('[wechatUnlockAudio] WeixinJSBridge ready, invoking getNetworkType');
+      wx.invoke('getNetworkType', {}, () => {
+        console.log('[wechatUnlockAudio] getNetworkType callback');
+        playFn();
+      });
     } else {
+      console.log('[wechatUnlockAudio] WeixinJSBridge not ready, waiting for WeixinJSBridgeReady');
       document.addEventListener('WeixinJSBridgeReady', () => {
         const wx2 = (window as typeof window & { WeixinJSBridge?: { invoke: (name: string, args: object, cb: () => void) => void } }).WeixinJSBridge;
         if (wx2 && wx2.invoke) {
-          wx2.invoke('getNetworkType', {}, playFn);
+          console.log('[wechatUnlockAudio] WeixinJSBridgeReady fired, invoking getNetworkType');
+          wx2.invoke('getNetworkType', {}, () => {
+            console.log('[wechatUnlockAudio] getNetworkType callback after ready');
+            playFn();
+          });
         } else {
+          console.warn('[wechatUnlockAudio] WeixinJSBridge still missing after ready event');
           playFn();
         }
       }, false);
@@ -105,12 +129,14 @@ function App() {
 
   // 初始化音频（解决微信自动播放限制）
   const initAudio = () => {
+    console.log('[initAudio] called, isAndroidWechat:', isAndroidWechat);
     if (isAndroidWechat) {
       // Android 微信：必须通过 WeixinJSBridge 解锁音频
       wechatUnlockAudio(() => {
         const silentAudio = new Audio('data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA');
-        silentAudio.play().catch(() => {});
+        silentAudio.play().then(() => console.log('[initAudio] silentAudio play success')).catch((e) => console.error('[initAudio] silentAudio play error:', e));
         setAudioEnabled(true);
+        console.log('[initAudio] audioEnabled set to true');
       });
       return;
     }
@@ -128,23 +154,31 @@ function App() {
 
   // Android 微信 fallback：使用有道 TTS 在线发音
   const playAudioFallback = useCallback((text: string, onEnd?: () => void) => {
+    console.log('[playAudioFallback] text:', text);
     if (audioRef.current) {
       audioRef.current.pause();
       audioRef.current = null;
     }
-    const audio = new Audio(`https://dict.youdao.com/dictvoice?audio=${encodeURIComponent(text)}`);
+    const url = `https://dict.youdao.com/dictvoice?audio=${encodeURIComponent(text)}`;
+    console.log('[playAudioFallback] audio url:', url);
+    const audio = new Audio(url);
     audioRef.current = audio;
     audio.onended = () => {
+      console.log('[playAudioFallback] audio ended');
       onEnd?.();
     };
-    audio.onerror = () => {
-      console.error('Audio fallback error for:', text);
+    audio.onerror = (e) => {
+      console.error('[playAudioFallback] audio error for:', text, e);
       onEnd?.();
+    };
+    audio.oncanplay = () => {
+      console.log('[playAudioFallback] audio canplay');
     };
 
     const doPlay = () => {
-      audio.play().catch((e) => {
-        console.error('Audio play error:', e);
+      console.log('[playAudioFallback] doPlay called');
+      audio.play().then(() => console.log('[playAudioFallback] audio play success')).catch((e) => {
+        console.error('[playAudioFallback] audio play error:', e);
         onEnd?.();
       });
     };
@@ -158,12 +192,14 @@ function App() {
 
   // 语音合成
   const speakWord = useCallback((text: string, rate: number, onEnd?: () => void) => {
+    console.log('[speakWord] text:', text, 'rate:', rate, 'isAndroidWechat:', isAndroidWechatRef.current);
     if (isAndroidWechatRef.current) {
       playAudioFallback(text, onEnd);
       return;
     }
 
     if (!('speechSynthesis' in window)) {
+      console.warn('[speakWord] speechSynthesis not supported');
       onEnd?.();
       return;
     }
@@ -178,16 +214,16 @@ function App() {
     utterance.volume = 1;
 
     utterance.onstart = () => {
-      console.log('Speech started:', text);
+      console.log('[speakWord] Speech started:', text);
     };
 
     utterance.onend = () => {
-      console.log('Speech ended:', text);
+      console.log('[speakWord] Speech ended:', text);
       onEnd?.();
     };
 
     utterance.onerror = (e) => {
-      console.error('Speech error:', e);
+      console.error('[speakWord] Speech error:', e);
       onEnd?.();
     };
 
@@ -213,6 +249,7 @@ function App() {
 
   // 停止播放
   const stopPlayback = () => {
+    console.log('[stopPlayback] called');
     if (timeoutRef.current) {
       clearTimeout(timeoutRef.current);
       timeoutRef.current = null;
@@ -258,11 +295,13 @@ function App() {
 
   // 开始播放
   const startPlayback = () => {
+    console.log('[startPlayback] called, isWechat:', isWechat, 'audioEnabled:', audioEnabled);
     if (isWechat && !audioEnabled) {
       initAudio();
     }
 
     const list = parseWords(words);
+    console.log('[startPlayback] word list:', list);
     if (list.length === 0) return;
 
     setWordList(list);
