@@ -203,17 +203,8 @@ function App() {
     console.log('[playAudioFallback] trying GET audio src mode...');
     const getUrl = `${TTS_BASE}/api/tts?text=${encodeURIComponent(text)}&voice=${encodeURIComponent('zh-CN-XiaoxiaoNeural')}&return_type=stream`;
     console.log('[playAudioFallback] GET url:', getUrl);
-    try {
-      const headResp = await fetch(getUrl, { method: 'HEAD' });
-      console.log('[playAudioFallback] GET HEAD status:', headResp.status);
-      if (headResp.ok) {
-        playFromUrl(getUrl);
-        return;
-      }
-      console.warn('[playAudioFallback] HEAD non-ok, falling through');
-    } catch (e) {
-      console.warn('[playAudioFallback] HEAD error, falling through', e);
-    }
+    playFromUrl(getUrl);
+    return;
 
     // 模式2：file（直接返回音频文件流）
     try {
