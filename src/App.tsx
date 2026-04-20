@@ -709,13 +709,28 @@ function App() {
 
         {/* 微信提示 */}
         {isWechat && !audioEnabled && (
-          <div className="bg-orange-100 border-2 border-orange-300 rounded-xl p-4 mb-4">
+          <div className="bg-orange-50 border-2 border-orange-300 rounded-xl p-4 mb-4">
             <div className="flex items-center gap-2 text-orange-700 mb-2">
               <VolumeX className="w-5 h-5" />
               <span className="font-medium">微信浏览器提示</span>
             </div>
-            <p className="text-orange-600 text-sm">
-              微信内置浏览器需要点击下方"开始听写"按钮才能播放语音。
+            <p className="text-orange-600 text-sm mb-2">
+              微信内置浏览器可能无法播放语音，建议用系统浏览器打开以获得最佳体验。
+            </p>
+            <button
+              onClick={() => {
+                navigator.clipboard.writeText(window.location.href).then(() => {
+                  setCopied(true);
+                  setTimeout(() => setCopied(false), 2000);
+                });
+              }}
+              className="w-full flex items-center justify-center gap-2 bg-orange-500 hover:bg-orange-600 text-white py-2 rounded-lg text-sm font-medium transition-colors"
+            >
+              {copied ? <Check className="w-4 h-4" /> : <Share2 className="w-4 h-4" />}
+              {copied ? '链接已复制' : '复制链接，到系统浏览器打开'}
+            </button>
+            <p className="text-orange-400 text-xs text-center mt-2">
+              或点击右上角 ··· → 在浏览器中打开
             </p>
           </div>
         )}
